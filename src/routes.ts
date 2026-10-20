@@ -2,15 +2,17 @@ import type { FastifyInstance } from "fastify";
 import { db } from "./db.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+const one = (x: any) => (Array.isArray(x) ? x[0] : x);
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function shape(row: any) {
-  const server = Array.isArray(row.servers) ? row.servers[0] : row.servers;
   return {
     name: row.name,
     description: row.description ?? null,
     color: row.color ?? null,
     score: row.score,
     members: row.member_count,
-    server: server?.name ?? null,
+    server: one(row.servers)?.name ?? null,
   };
 }
 
@@ -52,5 +54,34 @@ export function registerPublicRoutes(app: FastifyInstance) {
       return reply.code(500).send({ error: "db_error" });
     }
     return { teams: (data ?? []).map(shape) };
+  });
+
+  // Team details (exact name; the same name can exist on different servers)
+  app.get<{ Querystring: { name?: string } }>("/v1/teams/info", async (req, reply) => {
+    const name = (req.query.name ?? "").trim().toLowerCase().slice(0, 32);
+    if (name.length < 2) return reply.code(400).send({ error: "query_too_short" });
+    const { data, error } = await db
+      .from("teams")
+      .select(`${COLUMNS}, is_open, team_members(role, players(username))`)
+      .eq("is_public", true)
+      .eq("name_lower", name)
+      .order("score", { ascending: false })
+      .limit(5);
+    if (error) {
+      req.log.error(error);
+      return reply.code(500).send({ error: "db_error" });
+    }
+    return {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      teams: (data ?? []).map((row: any) => ({
+        ...shape(row),
+        open: !!row.is_open,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        memberList: (row.team_members ?? []).map((m: any) => ({
+          username: one(m.players)?.username ?? "?",
+          role: m.role,
+        })),
+      })),
+    };
   });
 }

@@ -3,11 +3,12 @@ import websocket from "@fastify/websocket";
 import rateLimit from "@fastify/rate-limit";
 import { env } from "./env.js";
 import { db } from "./db.js";
-import { hashKey } from "./keys.js";
-import { pluginMessage, type TeamSnapshotTeam } from "./protocol.js";
-import { hub } from "./hub.js";
+import { hashKey, generateCode } from "./keys.js";
+import { pluginMessage, botMessage, type TeamSnapshotTeam } from "./protocol.js";
+import { hub, botHub } from "./hub.js";
 import { bus } from "./bus.js";
 import { registerPublicRoutes } from "./routes.js";
+import { registerBotRoutes, isBotAuthorized } from "./botRoutes.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -21,6 +22,11 @@ await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
 await app.register(websocket, { options: { maxPayload: 1_048_576 } }); // 1 MB per message
 
 registerPublicRoutes(app);
+registerBotRoutes(app);
+
+// Minecraft -> Discord: forward chat and game events to the bot (dropped if the bot is offline)
+bus.on("chat", (e) => botHub.send(e));
+bus.on("event", (e) => botHub.send(e));
 
 /** Removes duplicate team names / players that would break the database constraints. */
 function sanitizeSnapshot(teams: TeamSnapshotTeam[]): TeamSnapshotTeam[] {
@@ -42,7 +48,54 @@ function sanitizeSnapshot(teams: TeamSnapshotTeam[]): TeamSnapshotTeam[] {
   return out;
 }
 
-// ---- Plugin connection: ws://HOST/v1/plugin   (header: Authorization: Bearer <server key>) ----
+// ---- Discord bot connection: wss://HOST/v1/bot   (header: Authorization: Bearer <BOT_SECRET>) ----
+app.get(
+  "/v1/bot",
+  {
+    websocket: true,
+    preValidation: async (req, reply) => {
+      if (!isBotAuthorized(req.headers.authorization)) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+    },
+  },
+  (socket, req) => {
+    botHub.register(socket);
+    req.log.info("discord bot connected");
+    socket.send(JSON.stringify({ type: "welcome" }));
+
+    let alive = true;
+    socket.on("pong", () => (alive = true));
+    const pinger = setInterval(() => {
+      if (!alive) return socket.terminate();
+      alive = false;
+      socket.ping();
+    }, 30_000);
+
+    socket.on("message", (raw) => {
+      let msg;
+      try {
+        msg = botMessage.parse(JSON.parse(raw.toString()));
+      } catch {
+        return;
+      }
+      if (msg.type === "ping") {
+        socket.send(JSON.stringify({ type: "pong" }));
+      } else if (msg.type === "discord.chat") {
+        // Discord -> Minecraft
+        hub.send(msg.serverId, { type: "discord.chat", author: msg.author, message: msg.message });
+      }
+    });
+
+    socket.on("close", () => {
+      clearInterval(pinger);
+      botHub.unregister(socket);
+      req.log.info("discord bot disconnected");
+    });
+  },
+);
+
+// ---- Plugin connection: wss://HOST/v1/plugin   (header: Authorization: Bearer <server key>) ----
 app.get(
   "/v1/plugin",
   {
@@ -93,6 +146,8 @@ app.get(
     let count = 0;
     let lastBeatWrite = 0;
     let lastSnapshot = 0;
+    let lastSetup = 0;
+    const lastLink = new Map<string, number>();
 
     socket.on("message", async (raw) => {
       const now = Date.now();
@@ -112,6 +167,7 @@ app.get(
       try {
         switch (msg.type) {
           case "heartbeat": {
+            if (msg.players) hub.setPlayers(server.id, msg.players);
             // write to DB at most once per minute (saves the free tier)
             if (now - lastBeatWrite > 60_000) {
               lastBeatWrite = now;
@@ -147,6 +203,52 @@ app.get(
           case "event":
             bus.emit("event", { serverId: server.id, serverName: server.name, ...msg });
             break;
+
+          case "link.request": {
+            const uuid = msg.uuid.toLowerCase();
+            if (now - (lastLink.get(uuid) ?? 0) < 10_000) {
+              return send({ type: "link.error", uuid, error: "too_fast" });
+            }
+            lastLink.set(uuid, now);
+
+            const { error: pErr } = await db
+              .from("players")
+              .upsert(
+                { mc_uuid: uuid, username: msg.username, last_seen_at: new Date().toISOString() },
+                { onConflict: "mc_uuid" },
+              );
+            if (pErr) throw pErr;
+
+            const { data: p } = await db.from("players").select("discord_id").eq("mc_uuid", uuid).maybeSingle();
+            if (p?.discord_id) return send({ type: "link.error", uuid, error: "already_linked" });
+
+            await db.from("link_codes").delete().eq("mc_uuid", uuid);
+            const code = generateCode(6);
+            const { error: cErr } = await db.from("link_codes").insert({
+              code,
+              mc_uuid: uuid,
+              server_id: server.id,
+              expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+            });
+            if (cErr) throw cErr;
+            send({ type: "link.code", uuid, code, expiresInMinutes: 10 });
+            break;
+          }
+
+          case "setup.request": {
+            if (now - lastSetup < 10_000) return send({ type: "error", error: "too_fast" });
+            lastSetup = now;
+            await db.from("setup_codes").delete().eq("server_id", server.id);
+            const code = generateCode(8);
+            const { error: sErr } = await db.from("setup_codes").insert({
+              code,
+              server_id: server.id,
+              expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+            });
+            if (sErr) throw sErr;
+            send({ type: "setup.code", code, expiresInMinutes: 30 });
+            break;
+          }
         }
       } catch (err) {
         req.log.error(err);

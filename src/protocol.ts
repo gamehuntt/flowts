@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const memberSchema = z.object({
   uuid: z.string().regex(UUID),
@@ -24,6 +24,7 @@ export const pluginMessage = z.discriminatedUnion("type", [
     type: z.literal("heartbeat"),
     online: z.number().int().min(0).max(100000),
     max: z.number().int().min(0).max(100000).optional(),
+    players: z.array(z.string().min(1).max(32)).max(500).optional(),
   }),
   z.object({
     type: z.literal("teams.snapshot"),
@@ -40,6 +41,25 @@ export const pluginMessage = z.discriminatedUnion("type", [
     kind: z.enum(["join", "quit", "death", "advancement"]),
     player: z.string().min(1).max(32),
     text: z.string().max(256).optional(),
+  }),
+  // player ran "/discord link" -> API replies with {type:"link.code"}
+  z.object({
+    type: z.literal("link.request"),
+    uuid: z.string().regex(UUID),
+    username: z.string().min(1).max(32),
+  }),
+  // admin ran "/flowt setup" -> API replies with {type:"setup.code"}
+  z.object({ type: z.literal("setup.request") }),
+]);
+
+/** Messages the Discord bot may send to the API. */
+export const botMessage = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("ping") }),
+  z.object({
+    type: z.literal("discord.chat"),
+    serverId: z.string().regex(UUID),
+    author: z.string().min(1).max(64),
+    message: z.string().min(1).max(256),
   }),
 ]);
 
