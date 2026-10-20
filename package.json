@@ -1,0 +1,28 @@
+{
+  "name": "flowt-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20.6" },
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "build": "tsc",
+    "start": "node --env-file=.env dist/index.js",
+    "create-server": "tsx --env-file=.env scripts/create-server.ts",
+    "fake-plugin": "tsx scripts/fake-plugin.ts"
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^10.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "fastify": "^5.0.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
