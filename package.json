@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch --env-file=.env src/index.ts",
     "build": "tsc",
-    "start": "node --env-file=.env dist/index.js",
+    "start": "node dist/index.js",
     "create-server": "tsx --env-file=.env scripts/create-server.ts",
     "fake-plugin": "tsx scripts/fake-plugin.ts"
   },
