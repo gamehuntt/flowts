@@ -1,0 +1,34 @@
+name: Flowt
+version: ${project.version}
+main: app.flowt.FlowtPlugin
+api-version: '1.21'
+description: Connects your server to Discord with the shared Flowt bot, plus global teams.
+website: https://flowts.onrender.com
+
+commands:
+  discord:
+    description: Discord info and account linking
+    aliases: [discordsrv, dsrv]
+    usage: /<command> [link]
+  flowt:
+    description: Flowt admin commands
+    usage: /<command> <setup|status|reload>
+  team:
+    description: Team commands
+    aliases: [t, teams]
+    usage: /<command> help
+  teama:
+    description: Team admin commands
+    aliases: [teamadmin]
+    usage: /<command> <disband|score|info|list>
+
+permissions:
+  flowt.admin:
+    description: Flowt and team admin commands
+    default: op
+  flowt.team:
+    description: Use team commands
+    default: true
+  flowt.link:
+    description: Link your Discord account
+    default: true

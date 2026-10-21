@@ -1,0 +1,322 @@
+package app.flowt;
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.WebSocket;
+import java.net.http.WebSocketHandshakeException;
+import java.time.Duration;
+import java.util.Collection;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/** Outbound WebSocket connection to the Flowt API. */
+final class FlowtClient {
+    private final FlowtPlugin plugin;
+    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build();
+    private final AtomicBoolean reconnectPending = new AtomicBoolean(false);
+
+    private volatile WebSocket socket;
+    private volatile boolean running;
+    private volatile CommandSender setupRequester;
+    private int attempt;
+    private CompletableFuture<Void> sendChain = CompletableFuture.completedFuture(null);
+
+    FlowtClient(FlowtPlugin plugin) {
+        this.plugin = plugin;
+    }
+
+    // ------------------------------------------------------------ lifecycle
+    void start() {
+        running = true;
+        connect();
+    }
+
+    void stop() {
+        running = false;
+        WebSocket w = socket;
+        socket = null;
+        if (w != null) w.abort();
+    }
+
+    /** Used by /flowt reload: drop the connection and connect again with the (new) config. */
+    void restart() {
+        WebSocket w = socket;
+        socket = null;
+        if (w != null) w.abort();
+        attempt = 0;
+        reconnectPending.set(false);
+        connect();
+    }
+
+    boolean isConnected() {
+        WebSocket w = socket;
+        return w != null && !w.isOutputClosed() && !w.isInputClosed();
+    }
+
+    private void connect() {
+        if (!running) return;
+        String key = plugin.getConfig().getString("api-key", "").trim();
+        if (key.isEmpty() || key.startsWith("PASTE")) {
+            plugin.getLogger().warning("api-key is not set in plugins/Flowt/config.yml - Discord features stay off until you set it (teams still work).");
+            return;
+        }
+        String url = plugin.getConfig().getString("api-url", "wss://flowts.onrender.com/v1/plugin");
+        try {
+            http.newWebSocketBuilder()
+                    .header("Authorization", "Bearer " + key)
+                    .connectTimeout(Duration.ofSeconds(60))
+                    .buildAsync(URI.create(url), new Handler())
+                    .whenComplete((ws, err) -> {
+                        if (err == null) return;
+                        Throwable c = (err instanceof CompletionException && err.getCause() != null) ? err.getCause() : err;
+                        if (c instanceof WebSocketHandshakeException whe && whe.getResponse() != null) {
+                            int code = whe.getResponse().statusCode();
+                            if (code == 401) {
+                                plugin.getLogger().warning("Flowt API rejected the api-key (HTTP 401). Check api-key in config.yml.");
+                            } else {
+                                plugin.getLogger().warning("Flowt API refused the connection (HTTP " + code + ").");
+                            }
+                        } else {
+                            plugin.getLogger().warning("Could not reach the Flowt API: " + c.getClass().getSimpleName()
+                                    + (c.getMessage() == null ? "" : " - " + c.getMessage()));
+                        }
+                        scheduleReconnect();
+                    });
+        } catch (IllegalArgumentException e) {
+            plugin.getLogger().severe("api-url in config.yml is not a valid address: " + url);
+        }
+    }
+
+    private void scheduleReconnect() {
+        if (!running || !plugin.isEnabled()) return;
+        if (!reconnectPending.compareAndSet(false, true)) return;
+        long delaySec = Math.min(60L, 2L << Math.min(attempt++, 5)); // 2,4,8,16,32,60 seconds
+        Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
+            reconnectPending.set(false);
+            connect();
+        }, delaySec * 20L);
+    }
+
+    private void dropped(WebSocket ws) {
+        if (socket != ws) return; // an old connection, ignore
+        socket = null;
+        scheduleReconnect();
+    }
+
+    // ------------------------------------------------------------ sending
+    private void send(JsonObject obj) {
+        WebSocket w = socket;
+        if (w == null || w.isOutputClosed()) return;
+        String json = obj.toString();
+        synchronized (this) {
+            // WebSocket.sendText must not run twice at the same time, so sends are chained
+            sendChain = sendChain
+                    .exceptionally(e -> null)
+                    .thenCompose(v -> w.sendText(json, true))
+                    .thenApply(x -> null);
+        }
+    }
+
+    /** Must be called on the main thread. */
+    void sendHeartbeat() {
+        if (!isConnected()) return;
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "heartbeat");
+        Collection<? extends Player> online = Bukkit.getOnlinePlayers();
+        o.addProperty("online", online.size());
+        o.addProperty("max", Bukkit.getMaxPlayers());
+        JsonArray names = new JsonArray();
+        int n = 0;
+        for (Player p : online) {
+            if (n++ >= 500) break;
+            names.add(Msg.limit(p.getName(), 32));
+        }
+        o.add("players", names);
+        send(o);
+    }
+
+    void sendChat(Player p, String message) {
+        String text = Msg.limit(Msg.clean(message).trim(), 256);
+        if (text.isEmpty()) return;
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "chat");
+        o.addProperty("player", Msg.limit(p.getName(), 32));
+        o.addProperty("uuid", p.getUniqueId().toString());
+        o.addProperty("message", text);
+        send(o);
+    }
+
+    void sendEvent(String kind, String player, String text) {
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "event");
+        o.addProperty("kind", kind);
+        o.addProperty("player", Msg.limit(player, 32));
+        if (text != null && !text.isBlank()) o.addProperty("text", Msg.limit(Msg.clean(text), 256));
+        send(o);
+    }
+
+    void sendTeamSnapshot(JsonObject snapshot) {
+        if (isConnected()) send(snapshot);
+    }
+
+    boolean requestLink(Player p) {
+        if (!isConnected()) return false;
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "link.request");
+        o.addProperty("uuid", p.getUniqueId().toString());
+        o.addProperty("username", Msg.limit(p.getName(), 32));
+        send(o);
+        return true;
+    }
+
+    boolean requestSetup(CommandSender who) {
+        if (!isConnected()) return false;
+        setupRequester = who;
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "setup.request");
+        send(o);
+        return true;
+    }
+
+    // ------------------------------------------------------------ receiving
+    private final class Handler implements WebSocket.Listener {
+        private final StringBuilder buf = new StringBuilder();
+
+        @Override
+        public void onOpen(WebSocket ws) {
+            if (!running) {
+                ws.abort();
+                return;
+            }
+            socket = ws;
+            attempt = 0;
+            synchronized (FlowtClient.this) {
+                sendChain = CompletableFuture.completedFuture(null);
+            }
+            plugin.getLogger().info("Connected to the Flowt API.");
+            ws.request(1);
+        }
+
+        @Override
+        public CompletionStage<?> onText(WebSocket ws, CharSequence data, boolean last) {
+            buf.append(data);
+            if (last) {
+                String msg = buf.toString();
+                buf.setLength(0);
+                try {
+                    handle(msg);
+                } catch (Exception e) {
+                    plugin.getLogger().warning("Could not read a message from the Flowt API: " + e.getMessage());
+                }
+            }
+            ws.request(1);
+            return null;
+        }
+
+        @Override
+        public CompletionStage<?> onClose(WebSocket ws, int statusCode, String reason) {
+            plugin.getLogger().info("Flowt API connection closed (" + statusCode
+                    + (reason == null || reason.isEmpty() ? "" : ": " + reason) + ")");
+            dropped(ws);
+            return null;
+        }
+
+        @Override
+        public void onError(WebSocket ws, Throwable error) {
+            plugin.getLogger().warning("Flowt API connection error: " + error.getMessage());
+            dropped(ws);
+        }
+    }
+
+    private static String str(JsonObject o, String k) {
+        return (o.has(k) && !o.get(k).isJsonNull()) ? o.get(k).getAsString() : "";
+    }
+
+    private void sync(Runnable r) {
+        if (plugin.isEnabled()) Bukkit.getScheduler().runTask(plugin, r);
+    }
+
+    private void handle(String raw) {
+        JsonObject o = JsonParser.parseString(raw).getAsJsonObject();
+        String type = str(o, "type");
+        switch (type) {
+            case "welcome" -> {
+                plugin.getLogger().info("Authenticated as server \"" + str(o, "name") + "\".");
+                sync(() -> {
+                    sendHeartbeat();
+                    plugin.teams().syncNow();
+                });
+            }
+            case "error" -> {
+                String e = str(o, "error");
+                if (!e.equals("snapshot_too_fast") && !e.equals("too_fast")) {
+                    plugin.getLogger().warning("Flowt API reported an error: " + e);
+                }
+            }
+            case "link.code" -> sync(() -> {
+                Player p = playerOf(str(o, "uuid"));
+                if (p == null) return;
+                String code = str(o, "code");
+                int mins = o.has("expiresInMinutes") ? o.get("expiresInMinutes").getAsInt() : 10;
+                Msg.ok(p, "Your link code is " + ChatColor.YELLOW + code + ChatColor.GREEN + ".");
+                Msg.info(p, "In Discord run: /link code:" + code + "  (valid for " + mins + " minutes)");
+            });
+            case "link.error" -> sync(() -> {
+                Player p = playerOf(str(o, "uuid"));
+                if (p == null) return;
+                String e = str(o, "error");
+                if (e.equals("already_linked")) Msg.err(p, "Your account is already linked to Discord.");
+                else if (e.equals("too_fast")) Msg.err(p, "Please wait a few seconds before asking for a new code.");
+                else Msg.err(p, "Could not create a link code. Try again later.");
+            });
+            case "link.success" -> sync(() -> {
+                Player p = playerOf(str(o, "uuid"));
+                if (p != null) Msg.ok(p, "Your Minecraft account is now linked to your Discord account!");
+            });
+            case "setup.code" -> sync(() -> {
+                CommandSender s = setupRequester != null ? setupRequester : Bukkit.getConsoleSender();
+                setupRequester = null;
+                String code = str(o, "code");
+                int mins = o.has("expiresInMinutes") ? o.get("expiresInMinutes").getAsInt() : 30;
+                Msg.ok(s, "Setup code: " + ChatColor.YELLOW + code + ChatColor.GREEN + "  (valid for " + mins + " minutes)");
+                Msg.info(s, "In your Discord server (you need the Manage Server permission) run:");
+                Msg.plain(s, ChatColor.WHITE + "/flowt setup code:" + code + ChatColor.GRAY + "  [channel: optional]");
+            });
+            case "discord.chat" -> {
+                if (!plugin.getConfig().getBoolean("discord-to-minecraft", true)) return;
+                String format = plugin.getConfig().getString("discord-chat-format", "&9[Discord] &f{author}&7: &f{message}");
+                String text = ChatColor.translateAlternateColorCodes('&', format)
+                        .replace("{author}", Msg.clean(str(o, "author")))
+                        .replace("{message}", Msg.clean(str(o, "message")));
+                sync(() -> Bukkit.broadcastMessage(text));
+            }
+            case "notice" -> sync(() -> {
+                String t = str(o, "text");
+                plugin.getLogger().info(t);
+                for (Player p : Bukkit.getOnlinePlayers()) {
+                    if (p.hasPermission("flowt.admin")) Msg.ok(p, t);
+                }
+            });
+            default -> { /* welcome-like or unknown messages are ignored */ }
+        }
+    }
+
+    private static Player playerOf(String uuid) {
+        try {
+            return Bukkit.getPlayer(UUID.fromString(uuid));
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+}

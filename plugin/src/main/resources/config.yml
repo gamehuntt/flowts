@@ -1,0 +1,31 @@
+# ======================= Flowt =======================
+# 1) Paste your server's API key below (it starts with "flowt_").
+# 2) Run /flowt reload  (or restart the server).
+# 3) Run /flowt setup and follow the instructions to connect a Discord channel.
+
+api-key: "PASTE_YOUR_SERVER_KEY_HERE"
+api-url: "wss://flowts.onrender.com/v1/plugin"
+
+# Shown by /discord (optional)
+discord-invite: ""
+
+# Minecraft chat -> Discord
+chat-to-discord: true
+# Discord chat -> Minecraft
+discord-to-minecraft: true
+# Placeholders: {author} {message}
+discord-chat-format: "&9[Discord] &f{author}&7: &f{message}"
+
+# Which game events are sent to Discord
+events:
+  join: true
+  quit: true
+  death: true
+  advancement: true
+
+teams:
+  enabled: true
+  max-members: 10
+  friendly-fire: false
+  score-per-kill: 1
+  home-cooldown-seconds: 10
