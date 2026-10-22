@@ -9,6 +9,7 @@ import { hub, botHub } from "./hub.js";
 import { bus } from "./bus.js";
 import { registerPublicRoutes } from "./routes.js";
 import { registerBotRoutes, isBotAuthorized } from "./botRoutes.js";
+import { registerAdminRoutes } from "./adminRoutes.js"; // TEMP: delete after creating your key
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -23,6 +24,7 @@ await app.register(websocket, { options: { maxPayload: 1_048_576 } }); // 1 MB p
 
 registerPublicRoutes(app);
 registerBotRoutes(app);
+registerAdminRoutes(app); // TEMP: delete after creating your key
 
 // Minecraft -> Discord: forward chat and game events to the bot (dropped if the bot is offline)
 bus.on("chat", (e) => botHub.send(e));
