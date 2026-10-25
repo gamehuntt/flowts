@@ -149,6 +149,17 @@ export function registerBotRoutes(app: FastifyInstance) {
         .eq("discord_guild_id", guildId)
         .limit(25);
       if (error) throw error;
+      // Linked Discord accounts of the players that are online right now
+      const allNames = [...new Set((data ?? []).flatMap((s) => hub.getPlayers(s.id) ?? []))];
+      const linked: Record<string, string> = {};
+      if (allNames.length > 0) {
+        const { data: rows } = await db
+          .from("players")
+          .select("username, discord_id")
+          .in("username", allNames)
+          .not("discord_id", "is", null);
+        for (const r of rows ?? []) if (r.discord_id) linked[String(r.username).toLowerCase()] = r.discord_id;
+      }
       return {
         servers: (data ?? []).map((s) => {
           const names = hub.getPlayers(s.id);
@@ -159,6 +170,9 @@ export function registerBotRoutes(app: FastifyInstance) {
             onlinePlayers: names ? names.length : s.online_players,
             maxPlayers: s.max_players,
             players: names ?? [],
+            discordIds: Object.fromEntries(
+              (names ?? []).filter((n) => linked[n.toLowerCase()]).map((n) => [n, linked[n.toLowerCase()]]),
+            ),
           };
         }),
       };
