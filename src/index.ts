@@ -9,7 +9,7 @@ import { hub, botHub } from "./hub.js";
 import { bus } from "./bus.js";
 import { registerPublicRoutes } from "./routes.js";
 import { registerBotRoutes, isBotAuthorized } from "./botRoutes.js";
-import { registerAdminRoutes } from "./adminRoutes.js"; // TEMP: delete after creating your key
+import { bindServerToChannel, isBlocked, recordFailure } from "./bind.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -24,7 +24,6 @@ await app.register(websocket, { options: { maxPayload: 1_048_576 } }); // 1 MB p
 
 registerPublicRoutes(app);
 registerBotRoutes(app);
-registerAdminRoutes(app); // TEMP: delete after creating your key
 
 // Minecraft -> Discord: forward chat and game events to the bot (dropped if the bot is offline)
 bus.on("chat", (e) => botHub.send(e));
@@ -234,6 +233,54 @@ app.get(
             });
             if (cErr) throw cErr;
             send({ type: "link.code", uuid, code, expiresInMinutes: 10 });
+            break;
+          }
+
+          case "setup.confirm": {
+            if (now - lastSetup < 3_000) return send({ type: "setup.error", error: "too_fast" });
+            lastSetup = now;
+            if (isBlocked(server.id)) return send({ type: "setup.error", error: "too_many_attempts" });
+            const code = msg.code.trim().toUpperCase();
+            const { data: row } = await db.from("discord_setup_codes").select("*").eq("code", code).maybeSingle();
+            if (!row || new Date(row.expires_at) < new Date()) {
+              recordFailure(server.id);
+              return send({ type: "setup.error", error: "invalid_or_expired_code" });
+            }
+            await bindServerToChannel(server.id, row.guild_id, row.channel_id);
+            await db.from("discord_setup_codes").delete().eq("code", code);
+            send({ type: "setup.done", name: server.name });
+            botHub.send({ type: "setup.done", serverName: server.name, channelId: row.channel_id });
+            break;
+          }
+
+          case "link.confirm": {
+            const uuid = msg.uuid.toLowerCase();
+            if (now - (lastLink.get(uuid) ?? 0) < 3_000) return send({ type: "link.error", uuid, error: "too_fast" });
+            lastLink.set(uuid, now);
+            if (isBlocked("mc:" + uuid)) return send({ type: "link.error", uuid, error: "too_many_attempts" });
+            const code = msg.code.trim().toUpperCase();
+            const { data: row } = await db.from("discord_link_codes").select("*").eq("code", code).maybeSingle();
+            if (!row || new Date(row.expires_at) < new Date()) {
+              recordFailure("mc:" + uuid);
+              return send({ type: "link.error", uuid, error: "invalid_code" });
+            }
+            const { error: pErr } = await db
+              .from("players")
+              .upsert({ mc_uuid: uuid, username: msg.username, last_seen_at: new Date().toISOString() }, { onConflict: "mc_uuid" });
+            if (pErr) throw pErr;
+            const { data: p } = await db.from("players").select("discord_id").eq("mc_uuid", uuid).maybeSingle();
+            if (p?.discord_id) return send({ type: "link.error", uuid, error: "already_linked" });
+            const { error: upErr } = await db
+              .from("players")
+              .update({ discord_id: row.discord_id, linked_at: new Date().toISOString() })
+              .eq("mc_uuid", uuid);
+            if (upErr) {
+              if (upErr.code === "23505") return send({ type: "link.error", uuid, error: "discord_already_linked" });
+              throw upErr;
+            }
+            await db.from("discord_link_codes").delete().eq("code", code);
+            send({ type: "link.success", uuid, discordId: row.discord_id });
+            botHub.send({ type: "link.done", discordId: row.discord_id, username: msg.username });
             break;
           }
 

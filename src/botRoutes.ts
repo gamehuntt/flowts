@@ -3,7 +3,8 @@ import { z } from "zod";
 import { db } from "./db.js";
 import { env } from "./env.js";
 import { hub } from "./hub.js";
-import { safeEqual } from "./keys.js";
+import { safeEqual, generateApiKey, generateCode } from "./keys.js";
+import { bindServerToChannel, CHANNEL_KINDS, isBlocked as blocked, recordFailure } from "./bind.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const one = (x: any) => (Array.isArray(x) ? x[0] : x);
@@ -12,19 +13,6 @@ export function isBotAuthorized(header: string | undefined): boolean {
   const key = header?.startsWith("Bearer ") ? header.slice(7).trim() : "";
   return key.length > 0 && safeEqual(key, env.BOT_SECRET);
 }
-
-// Brute-force protection for one-time codes: max 10 wrong codes per hour per Discord guild/user
-const failures = new Map<string, { count: number; reset: number }>();
-const blocked = (id: string) => {
-  const f = failures.get(id);
-  return !!f && f.reset > Date.now() && f.count >= 10;
-};
-const recordFailure = (id: string) => {
-  const now = Date.now();
-  const f = failures.get(id);
-  if (!f || f.reset <= now) failures.set(id, { count: 1, reset: now + 3_600_000 });
-  else f.count++;
-};
 
 const SNOWFLAKE = /^\d{5,25}$/;
 const setupBody = z.object({
@@ -37,7 +25,23 @@ const linkBody = z.object({
   discordId: z.string().regex(SNOWFLAKE),
 });
 
-const CHANNEL_KINDS = ["chat", "join_leave", "death", "advancement"] as const;
+
+// Until the website dashboard exists, every server belongs to one system owner account.
+let cachedOwnerId: string | undefined;
+async function getOwnerId(): Promise<string> {
+  if (cachedOwnerId) return cachedOwnerId;
+  const email = "dev-owner@flowt.local";
+  const { data: list, error: listErr } = await db.auth.admin.listUsers({ page: 1, perPage: 200 });
+  if (listErr) throw listErr;
+  let id = list.users.find((u) => u.email === email)?.id;
+  if (!id) {
+    const { data, error } = await db.auth.admin.createUser({ email, email_confirm: true });
+    if (error) throw error;
+    id = data.user.id;
+  }
+  cachedOwnerId = id;
+  return id;
+}
 
 /** All /v1/bot/* REST routes. Every route here requires the BOT_SECRET. */
 export function registerBotRoutes(app: FastifyInstance) {
@@ -89,18 +93,7 @@ export function registerBotRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: "invalid_or_expired_code" });
       }
 
-      const { error: e1 } = await db.from("servers").update({ discord_guild_id: guildId }).eq("id", row.server_id);
-      if (e1) throw e1;
-      const { error: e2 } = await db
-        .from("server_channels")
-        .delete()
-        .eq("server_id", row.server_id)
-        .in("kind", [...CHANNEL_KINDS]);
-      if (e2) throw e2;
-      const { error: e3 } = await db
-        .from("server_channels")
-        .insert(CHANNEL_KINDS.map((kind) => ({ server_id: row.server_id, kind, discord_channel_id: channelId })));
-      if (e3) throw e3;
+      await bindServerToChannel(row.server_id, guildId, channelId);
       await db.from("setup_codes").delete().eq("code", row.code);
 
       hub.send(row.server_id, { type: "notice", text: "Discord channel linked to Flowt." });
@@ -137,6 +130,83 @@ export function registerBotRoutes(app: FastifyInstance) {
 
       if (row.server_id) hub.send(row.server_id, { type: "link.success", uuid: row.mc_uuid, discordId });
       return { username: one(row.players)?.username ?? "?", serverName: one(row.servers)?.name ?? null };
+    });
+
+    // ---- Discord-initiated flows (mirror of the in-game commands) ----
+
+    // /flowt setup (no code): bot makes a code, admin runs "/flowt setup <code>" in Minecraft
+    bot.post("/v1/bot/setup/start", async (req, reply) => {
+      const body = z
+        .object({ guildId: z.string().regex(SNOWFLAKE), channelId: z.string().regex(SNOWFLAKE), userId: z.string().regex(SNOWFLAKE) })
+        .safeParse(req.body);
+      if (!body.success) return reply.code(400).send({ error: "invalid_request" });
+      const { guildId, channelId, userId } = body.data;
+      await db.from("discord_setup_codes").delete().eq("guild_id", guildId);
+      const code = generateCode(8);
+      const { error } = await db.from("discord_setup_codes").insert({
+        code,
+        guild_id: guildId,
+        channel_id: channelId,
+        created_by: userId,
+        expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+      });
+      if (error) throw error;
+      return { code, expiresInMinutes: 30 };
+    });
+
+    // /link (no code): bot makes a code, player runs "/discord link <code>" in Minecraft
+    bot.post("/v1/bot/link/start", async (req, reply) => {
+      const body = z.object({ discordId: z.string().regex(SNOWFLAKE) }).safeParse(req.body);
+      if (!body.success) return reply.code(400).send({ error: "invalid_request" });
+      const { discordId } = body.data;
+      const { data: existing } = await db.from("players").select("username").eq("discord_id", discordId).maybeSingle();
+      if (existing) return reply.code(409).send({ error: "already_linked", username: existing.username });
+      await db.from("discord_link_codes").delete().eq("discord_id", discordId);
+      const code = generateCode(6);
+      const { error } = await db.from("discord_link_codes").insert({
+        code,
+        discord_id: discordId,
+        expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+      });
+      if (error) throw error;
+      return { code, expiresInMinutes: 10 };
+    });
+
+    // /flowt create: make a new server + API key straight from Discord (no Node / scripts needed)
+    bot.post("/v1/bot/server/create", async (req, reply) => {
+      const body = z
+        .object({
+          guildId: z.string().regex(SNOWFLAKE),
+          channelId: z.string().regex(SNOWFLAKE),
+          userId: z.string().regex(SNOWFLAKE),
+          name: z.string().trim().min(2).max(48),
+          isPublic: z.boolean().default(false),
+        })
+        .safeParse(req.body);
+      if (!body.success) return reply.code(400).send({ error: "invalid_request" });
+      const { guildId, channelId, userId, name, isPublic } = body.data;
+
+      const perGuild = await db.from("servers").select("id", { count: "exact", head: true }).eq("discord_guild_id", guildId);
+      if ((perGuild.count ?? 0) >= 3) return reply.code(409).send({ error: "guild_limit" });
+      const perUser = await db.from("servers").select("id", { count: "exact", head: true }).eq("created_by_discord_id", userId);
+      if ((perUser.count ?? 0) >= 5) return reply.code(409).send({ error: "user_limit" });
+
+      const ownerId = await getOwnerId();
+      const { data: server, error: sErr } = await db
+        .from("servers")
+        .insert({ owner_id: ownerId, name, is_public: isPublic, created_by_discord_id: userId })
+        .select("id")
+        .single();
+      if (sErr) throw sErr;
+
+      const host = env.PUBLIC_HOST ?? process.env.RENDER_EXTERNAL_HOSTNAME ?? req.headers.host ?? "";
+      if (!host) throw new Error("API host unknown: set PUBLIC_HOST");
+      const { key, hash, prefix } = generateApiKey(host);
+      const { error: kErr } = await db.from("server_keys").insert({ server_id: server.id, key_hash: hash, key_prefix: prefix });
+      if (kErr) throw kErr;
+
+      await bindServerToChannel(server.id, guildId, channelId);
+      return { apiKey: key, serverId: server.id, name };
     });
 
     // /list and /flowt status: Minecraft servers connected to this Discord server

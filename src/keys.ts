@@ -4,9 +4,13 @@ export function hashKey(key: string): string {
   return createHash("sha256").update(key).digest("hex");
 }
 
-/** Creates a new server API key. Show `key` to the owner ONCE; store only `hash`. */
-export function generateApiKey() {
-  const key = "flowt_" + randomBytes(24).toString("hex");
+/**
+ * Creates a new server API key. Show `key` to the owner ONCE; store only `hash`.
+ * Format: flowt_<base64url(api host)>.<48 hex chars>
+ * The plugin reads the API address out of the key, so no URL is needed in the plugin or its config.yml.
+ */
+export function generateApiKey(host: string) {
+  const key = "flowt_" + Buffer.from(host, "utf8").toString("base64url") + "." + randomBytes(24).toString("hex");
   return { key, hash: hashKey(key), prefix: key.slice(0, 12) };
 }
 

@@ -4,6 +4,8 @@ const schema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(20),
   BOT_SECRET: z.string().min(16),
+  // Public host of this API (e.g. my-api.onrender.com). On Render it is detected automatically.
+  PUBLIC_HOST: z.string().optional(),
   PORT: z.coerce.number().int().default(3000),
 });
 
