@@ -29,8 +29,8 @@ final class FlowtCommand implements TabExecutor {
         // /discord and its DiscordSRV-style subcommands
         if (cmd.getName().equalsIgnoreCase("discord")) {
             switch (sub) {
-                case "link" -> link(sender);
-                case "reload", "status" -> admin(sender, sub);
+                case "link" -> link(sender, args);
+                case "reload", "status" -> admin(sender, sub, args);
                 default -> {
                     String invite = plugin.getConfig().getString("discord-invite", "");
                     if (invite != null && !invite.isBlank()) Msg.ok(sender, "Join our Discord: " + ChatColor.AQUA + invite);
@@ -42,25 +42,34 @@ final class FlowtCommand implements TabExecutor {
 
         // /flowt
         switch (sub) {
-            case "setup", "status", "reload" -> admin(sender, sub);
+            case "setup", "status", "reload" -> admin(sender, sub, args);
             default -> {
                 Msg.info(sender, "Flowt commands:");
-                Msg.plain(sender, ChatColor.GRAY + " /flowt setup  - connect a Discord channel");
+                Msg.plain(sender, ChatColor.GRAY + " /flowt setup [code] - connect a Discord channel");
                 Msg.plain(sender, ChatColor.GRAY + " /flowt status - connection status");
                 Msg.plain(sender, ChatColor.GRAY + " /flowt reload - reload config + reconnect");
-                Msg.plain(sender, ChatColor.GRAY + " /discord link - link your Discord account");
+                Msg.plain(sender, ChatColor.GRAY + " /discord link [code] - link your Discord account");
             }
         }
         return true;
     }
 
-    private void link(CommandSender sender) {
+    private void link(CommandSender sender, String[] args) {
         if (!(sender instanceof Player p)) {
             Msg.err(sender, "Only players can link an account.");
             return;
         }
         if (!p.hasPermission("flowt.link")) {
             Msg.err(p, "You don't have permission.");
+            return;
+        }
+        if (args.length >= 2) {
+            // Started in Discord with /link -> finish here with the code the bot gave
+            if (!plugin.client().confirmLink(p, args[1])) {
+                Msg.err(p, "The Discord bridge is offline right now. Try again in a minute.");
+                return;
+            }
+            Msg.info(p, "Checking your code...");
             return;
         }
         if (!plugin.client().requestLink(p)) {
@@ -70,13 +79,22 @@ final class FlowtCommand implements TabExecutor {
         Msg.info(p, "Creating your link code...");
     }
 
-    private void admin(CommandSender sender, String sub) {
+    private void admin(CommandSender sender, String sub, String[] args) {
         if (!isAdmin(sender)) {
             Msg.err(sender, "You don't have permission.");
             return;
         }
         switch (sub) {
             case "setup" -> {
+                if (args.length >= 2) {
+                    // Started in Discord with /flowt setup -> finish here with the code the bot gave
+                    if (!plugin.client().confirmSetup(sender, args[1])) {
+                        Msg.err(sender, "Not connected to the Flowt API. Check api-key in config.yml, then /flowt reload.");
+                    } else {
+                        Msg.info(sender, "Checking your code...");
+                    }
+                    return;
+                }
                 if (!plugin.client().requestSetup(sender)) {
                     Msg.err(sender, "Not connected to the Flowt API. Check api-key in config.yml, then /flowt reload.");
                 } else {

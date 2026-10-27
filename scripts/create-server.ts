@@ -26,7 +26,8 @@ const { data: server, error: serverErr } = await db
   .single();
 if (serverErr) throw serverErr;
 
-const { key, hash, prefix } = generateApiKey();
+const host = process.env.PUBLIC_HOST ?? "localhost:3000";
+const { key, hash, prefix } = generateApiKey(host);
 const { error: keyErr } = await db
   .from("server_keys")
   .insert({ server_id: server.id, key_hash: hash, key_prefix: prefix });

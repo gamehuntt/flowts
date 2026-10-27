@@ -9,10 +9,12 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.net.http.WebSocketHandshakeException;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -29,6 +31,7 @@ final class FlowtClient {
     private volatile WebSocket socket;
     private volatile boolean running;
     private volatile CommandSender setupRequester;
+    private volatile CommandSender confirmRequester;
     private int attempt;
     private CompletableFuture<Void> sendChain = CompletableFuture.completedFuture(null);
 
@@ -71,7 +74,13 @@ final class FlowtClient {
             plugin.getLogger().warning("api-key is not set in plugins/Flowt/config.yml - Discord features stay off until you set it (teams still work).");
             return;
         }
-        String url = plugin.getConfig().getString("api-url", "wss://flowts.onrender.com/v1/plugin");
+        String host = hostFromKey(key);
+        if (host == null) {
+            plugin.getLogger().warning("The api-key in config.yml is not valid (or is an old-format key). Create a new one in Discord with /flowt create.");
+            return;
+        }
+        String scheme = (host.startsWith("localhost") || host.startsWith("127.0.0.1")) ? "ws" : "wss";
+        String url = scheme + "://" + host + "/v1/plugin";
         try {
             http.newWebSocketBuilder()
                     .header("Authorization", "Bearer " + key)
@@ -94,7 +103,20 @@ final class FlowtClient {
                         scheduleReconnect();
                     });
         } catch (IllegalArgumentException e) {
-            plugin.getLogger().severe("api-url in config.yml is not a valid address: " + url);
+            plugin.getLogger().severe("The api-key contains an invalid server address.");
+        }
+    }
+
+    /** The API address is stored inside the key: flowt_<base64url(host)>.<secret> */
+    private static String hostFromKey(String key) {
+        if (!key.startsWith("flowt_")) return null;
+        int dot = key.indexOf('.');
+        if (dot <= 6) return null;
+        try {
+            String host = new String(Base64.getUrlDecoder().decode(key.substring(6, dot)), StandardCharsets.UTF_8);
+            return host.matches("[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?") ? host : null;
+        } catch (IllegalArgumentException e) {
+            return null;
         }
     }
 
@@ -176,6 +198,29 @@ final class FlowtClient {
         o.addProperty("type", "link.request");
         o.addProperty("uuid", p.getUniqueId().toString());
         o.addProperty("username", Msg.limit(p.getName(), 32));
+        send(o);
+        return true;
+    }
+
+    /** /discord link <code>: finish a link that was started in Discord with /link. */
+    boolean confirmLink(Player p, String code) {
+        if (!isConnected()) return false;
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "link.confirm");
+        o.addProperty("uuid", p.getUniqueId().toString());
+        o.addProperty("username", Msg.limit(p.getName(), 32));
+        o.addProperty("code", Msg.limit(code, 16));
+        send(o);
+        return true;
+    }
+
+    /** /flowt setup <code>: finish a setup that was started in Discord with /flowt setup. */
+    boolean confirmSetup(CommandSender who, String code) {
+        if (!isConnected()) return false;
+        confirmRequester = who;
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "setup.confirm");
+        o.addProperty("code", Msg.limit(code, 16));
         send(o);
         return true;
     }
@@ -278,6 +323,9 @@ final class FlowtClient {
                 String e = str(o, "error");
                 if (e.equals("already_linked")) Msg.err(p, "Your account is already linked to Discord.");
                 else if (e.equals("too_fast")) Msg.err(p, "Please wait a few seconds before asking for a new code.");
+                else if (e.equals("invalid_code")) Msg.err(p, "That code is wrong or expired. Run /link in Discord to get a new one.");
+                else if (e.equals("discord_already_linked")) Msg.err(p, "That Discord account is already linked to another Minecraft account.");
+                else if (e.equals("too_many_attempts")) Msg.err(p, "Too many wrong codes. Try again in an hour.");
                 else Msg.err(p, "Could not create a link code. Try again later.");
             });
             case "link.success" -> sync(() -> {
@@ -292,6 +340,19 @@ final class FlowtClient {
                 Msg.ok(s, "Setup code: " + ChatColor.YELLOW + code + ChatColor.GREEN + "  (valid for " + mins + " minutes)");
                 Msg.info(s, "In your Discord server (you need the Manage Server permission) run:");
                 Msg.plain(s, ChatColor.WHITE + "/flowt setup code:" + code + ChatColor.GRAY + "  [channel: optional]");
+            });
+            case "setup.done" -> sync(() -> {
+                CommandSender s = confirmRequester != null ? confirmRequester : Bukkit.getConsoleSender();
+                confirmRequester = null;
+                Msg.ok(s, "Connected to Discord! Chat will now appear in the channel you chose.");
+            });
+            case "setup.error" -> sync(() -> {
+                CommandSender s = confirmRequester != null ? confirmRequester : Bukkit.getConsoleSender();
+                confirmRequester = null;
+                String e = str(o, "error");
+                if (e.equals("invalid_or_expired_code")) Msg.err(s, "That code is wrong or expired. Run /flowt setup in Discord to get a new one.");
+                else if (e.equals("too_many_attempts")) Msg.err(s, "Too many wrong codes. Try again in an hour.");
+                else Msg.err(s, "Could not connect to Discord. Try again in a few seconds.");
             });
             case "discord.chat" -> {
                 if (!plugin.getConfig().getBoolean("discord-to-minecraft", true)) return;

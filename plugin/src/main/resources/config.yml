@@ -1,10 +1,11 @@
 # ======================= Flowt =======================
-# 1) Paste your server's API key below (it starts with "flowt_").
+# 1) In your Discord server run /flowt create (you need the Manage Server permission).
+#    The bot shows your API key once - paste it below (it starts with "flowt_").
 # 2) Run /flowt reload  (or restart the server).
-# 3) Run /flowt setup and follow the instructions to connect a Discord channel.
+# The key already contains the address of the Flowt service, so nothing else is needed here.
+# Link accounts:  /discord link  (in game)  or  /link  (in Discord) - both ways work.
 
 api-key: "PASTE_YOUR_SERVER_KEY_HERE"
-api-url: "wss://flowts.onrender.com/v1/plugin"
 
 # Shown by /discord (optional)
 discord-invite: ""
