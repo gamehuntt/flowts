@@ -287,6 +287,20 @@ app.get(
             break;
           }
 
+          case "disconnect": {
+            // remove the key and the Discord channel bindings; drop the server row (or just unlink it if it is still referenced)
+            await db.from("server_keys").delete().eq("server_id", server.id);
+            await db.from("server_channels").delete().eq("server_id", server.id);
+            const { error: delErr } = await db.from("servers").delete().eq("id", server.id);
+            if (delErr) {
+              await db.from("servers").update({ discord_guild_id: null, created_by_discord_id: null }).eq("id", server.id);
+            }
+            send({ type: "disconnect.done" });
+            botHub.send({ type: "routes.changed" });
+            setTimeout(() => socket.close(1000, "disconnected"), 300);
+            break;
+          }
+
           case "setup.request": {
             if (now - lastSetup < 10_000) return send({ type: "error", error: "too_fast" });
             lastSetup = now;

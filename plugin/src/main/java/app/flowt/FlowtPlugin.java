@@ -32,6 +32,7 @@ public final class FlowtPlugin extends JavaPlugin {
         bind("discord", flowtCommand);
         bind("flowt", flowtCommand);
         bind("connect", flowtCommand);
+        bind("disconnect", flowtCommand);
         bind("account", flowtCommand);
 
         client.start();

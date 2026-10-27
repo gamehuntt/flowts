@@ -50,6 +50,8 @@ export const pluginMessage = z.discriminatedUnion("type", [
   }),
   // admin ran "/flowt setup" -> API replies with {type:"setup.code"}
   z.object({ type: z.literal("setup.request") }),
+  // admin ran "/disconnect": remove this server's Discord connection and key -> {type:"disconnect.done"}
+  z.object({ type: z.literal("disconnect") }),
   // admin ran "/flowt setup <code>" with a code made by the Discord bot -> {type:"setup.done"|"setup.error"}
   z.object({ type: z.literal("setup.confirm"), code: z.string().min(4).max(16) }),
   // player ran "/discord link <code>" with a code made by the Discord bot -> {type:"link.success"|"link.error"}

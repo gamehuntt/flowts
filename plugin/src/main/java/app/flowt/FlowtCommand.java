@@ -34,6 +34,12 @@ final class FlowtCommand implements TabExecutor {
             return true;
         }
 
+        // /disconnect  - remove this server's Discord connection
+        if (name.equals("disconnect")) {
+            disconnect(sender);
+            return true;
+        }
+
         // /account connect [code]  - link your Minecraft account to your Discord account
         if (name.equals("account")) {
             if (sub.equals("connect")) link(sender, args);
@@ -45,7 +51,8 @@ final class FlowtCommand implements TabExecutor {
         if (name.equals("discord")) {
             switch (sub) {
                 case "link" -> link(sender, args);
-                case "reload", "status", "disconnect" -> admin(sender, sub);
+                case "reload", "status" -> admin(sender, sub);
+                case "disconnect" -> disconnect(sender);
                 default -> {
                     String invite = plugin.getConfig().getString("discord-invite", "");
                     if (invite != null && !invite.isBlank()) Msg.ok(sender, "Join our Discord: " + ChatColor.AQUA + invite);
@@ -58,14 +65,15 @@ final class FlowtCommand implements TabExecutor {
         // /flowt
         switch (sub) {
             case "connect", "setup" -> connect(sender, Arrays.copyOfRange(args, 1, args.length));
-            case "status", "reload", "disconnect" -> admin(sender, sub);
+            case "status", "reload" -> admin(sender, sub);
+            case "disconnect" -> disconnect(sender);
             default -> {
                 Msg.info(sender, "Flowt commands:");
                 Msg.plain(sender, ChatColor.GRAY + " /connect [code] - connect this server to Discord");
                 Msg.plain(sender, ChatColor.GRAY + " /account connect [code] - link your Discord account");
                 Msg.plain(sender, ChatColor.GRAY + " /flowt status - connection status");
                 Msg.plain(sender, ChatColor.GRAY + " /flowt reload - reload config + reconnect");
-                Msg.plain(sender, ChatColor.GRAY + " /flowt disconnect - forget the Discord connection");
+                Msg.plain(sender, ChatColor.GRAY + " /disconnect - disconnect this server from Discord");
             }
         }
         return true;
@@ -100,6 +108,25 @@ final class FlowtCommand implements TabExecutor {
             }
         } else {
             plugin.pairing().start(sender);
+        }
+    }
+
+    private void disconnect(CommandSender sender) {
+        if (!isAdmin(sender)) {
+            Msg.err(sender, "You don't have permission.");
+            return;
+        }
+        if (plugin.apiKey().isEmpty()) {
+            Msg.info(sender, "This server is not connected to Discord.");
+            return;
+        }
+        if (plugin.client().requestDisconnect(sender)) {
+            Msg.info(sender, "Disconnecting...");
+        } else {
+            // Flowt cannot be reached right now: at least forget the connection on this server
+            plugin.setApiKey("");
+            plugin.client().restart();
+            Msg.ok(sender, "Disconnected on this server. (Flowt could not be reached, so its copy is removed when you connect again.)");
         }
     }
 
@@ -143,11 +170,6 @@ final class FlowtCommand implements TabExecutor {
                 plugin.reloadConfig();
                 plugin.client().restart();
                 Msg.ok(sender, "Config reloaded, reconnecting to Flowt...");
-            }
-            case "disconnect" -> {
-                plugin.setApiKey("");
-                plugin.client().restart();
-                Msg.ok(sender, "Disconnected from Discord. Run /connect to connect again.");
             }
             default -> { }
         }

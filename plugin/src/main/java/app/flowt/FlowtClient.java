@@ -32,6 +32,7 @@ final class FlowtClient {
     private volatile boolean running;
     private volatile CommandSender setupRequester;
     private volatile CommandSender confirmRequester;
+    private volatile CommandSender disconnectRequester;
     private int attempt;
     private CompletableFuture<Void> sendChain = CompletableFuture.completedFuture(null);
 
@@ -228,6 +229,16 @@ final class FlowtClient {
         return true;
     }
 
+    /** /disconnect: ask Flowt to remove this server's Discord connection and key. */
+    boolean requestDisconnect(CommandSender who) {
+        if (!isConnected()) return false;
+        disconnectRequester = who;
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "disconnect");
+        send(o);
+        return true;
+    }
+
     boolean requestSetup(CommandSender who) {
         if (!isConnected()) return false;
         setupRequester = who;
@@ -344,6 +355,14 @@ final class FlowtClient {
                 Msg.info(s, "In your Discord server (you need the Manage Server permission) run:");
                 Msg.plain(s, ChatColor.WHITE + "/connect code:" + code + ChatColor.GRAY + "  [channel: optional]");
             });
+            case "disconnect.done" -> {
+                plugin.setApiKey("");
+                sync(() -> {
+                    CommandSender s = disconnectRequester != null ? disconnectRequester : Bukkit.getConsoleSender();
+                    disconnectRequester = null;
+                    Msg.ok(s, "Disconnected from Discord. Run /connect to connect again.");
+                });
+            }
             case "setup.done" -> sync(() -> {
                 CommandSender s = confirmRequester != null ? confirmRequester : Bukkit.getConsoleSender();
                 confirmRequester = null;

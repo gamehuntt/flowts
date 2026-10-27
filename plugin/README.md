@@ -12,7 +12,7 @@
 2. Discord mein (Manage Server permission) `/connect` chalao, code milega. Minecraft console ya game (OP) mein `/connect <code>`.
    Ulta bhi chalta hai: Minecraft mein `/connect`, phir Discord mein `/connect code:<code>`.
 3. Console mein `Connected to the Flowt API` aana chahiye. Chat us channel se juda hota hai jahan `/connect` chalaya tha.
-4. Connection `plugins/Flowt/connection.yml` mein khud save hota hai (ise kisi ko mat do). Hatana ho toh `/flowt disconnect`.
+4. Connection `plugins/Flowt/connection.yml` mein khud save hota hai (ise kisi ko mat do). Hatana ho toh `/disconnect` (Flowt se bhi connection aur key hat jati hai).
 5. Account link: Minecraft mein `/account connect` -> Discord mein `/account connect code:<code>`, ya Discord mein `/account connect` -> Minecraft mein `/account connect <code>`.
 
 ## Commands
@@ -21,6 +21,7 @@
 - `/connect [code]`: server ko Discord se jodna (OP)
 - `/account connect [code]`: apna account link karna
 - `/discord` (`/discordsrv`, `/dsrv`): link [code], invite
-- `/flowt`: status, reload, disconnect
+- `/disconnect`: server ko Discord se alag karna (OP)
+- `/flowt`: status, reload
 
 Agar server par DiscordSRV ya BetterTeams bhi installed hai to commands takra sakte hain. Test ke liye unhe hata do.

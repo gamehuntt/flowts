@@ -8,6 +8,9 @@ commands:
   connect:
     description: Connect this server to Discord
     usage: /<command> [code]
+  disconnect:
+    description: Disconnect this server from Discord
+    usage: /<command>
   account:
     description: Link your Minecraft account to Discord
     usage: /<command> connect [code]
