@@ -9,6 +9,7 @@ import { hub, botHub } from "./hub.js";
 import { bus } from "./bus.js";
 import { registerPublicRoutes } from "./routes.js";
 import { registerBotRoutes, isBotAuthorized } from "./botRoutes.js";
+import { registerPairRoutes } from "./pairRoutes.js";
 import { bindServerToChannel, isBlocked, recordFailure } from "./bind.js";
 
 declare module "fastify" {
@@ -17,13 +18,15 @@ declare module "fastify" {
   }
 }
 
-const app = Fastify({ logger: true });
+// trustProxy: real client IPs behind Render's proxy (needed for per-IP rate limits)
+const app = Fastify({ logger: true, trustProxy: true });
 
 await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
 await app.register(websocket, { options: { maxPayload: 1_048_576 } }); // 1 MB per message
 
 registerPublicRoutes(app);
 registerBotRoutes(app);
+registerPairRoutes(app);
 
 // Minecraft -> Discord: forward chat and game events to the bot (dropped if the bot is offline)
 bus.on("chat", (e) => botHub.send(e));
@@ -241,13 +244,13 @@ app.get(
             lastSetup = now;
             if (isBlocked(server.id)) return send({ type: "setup.error", error: "too_many_attempts" });
             const code = msg.code.trim().toUpperCase();
-            const { data: row } = await db.from("discord_setup_codes").select("*").eq("code", code).maybeSingle();
+            const { data: row } = await db.from("pair_codes").select("*").eq("code", code).eq("kind", "discord").maybeSingle();
             if (!row || new Date(row.expires_at) < new Date()) {
               recordFailure(server.id);
               return send({ type: "setup.error", error: "invalid_or_expired_code" });
             }
             await bindServerToChannel(server.id, row.guild_id, row.channel_id);
-            await db.from("discord_setup_codes").delete().eq("code", code);
+            await db.from("pair_codes").delete().eq("code", code);
             send({ type: "setup.done", name: server.name });
             botHub.send({ type: "setup.done", serverName: server.name, channelId: row.channel_id });
             break;

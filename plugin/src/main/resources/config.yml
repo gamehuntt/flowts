@@ -1,11 +1,12 @@
 # ======================= Flowt =======================
-# 1) In your Discord server run /flowt create (you need the Manage Server permission).
-#    The bot shows your API key once - paste it below (it starts with "flowt_").
-# 2) Run /flowt reload  (or restart the server).
-# The key already contains the address of the Flowt service, so nothing else is needed here.
-# Link accounts:  /discord link  (in game)  or  /link  (in Discord) - both ways work.
+# Nothing to set up here:
+#   1) In Discord run /connect  (Manage Server permission)  and then /connect <code> in Minecraft
+#      - or run /connect in Minecraft and /connect <code> in Discord, whichever you like.
+#   2) Players link their accounts with /account connect (in Minecraft or Discord).
+# The connection is saved automatically in plugins/Flowt/connection.yml - do not share that file.
 
-api-key: "PASTE_YOUR_SERVER_KEY_HERE"
+# Name shown for this server in Discord (empty = first line of server.properties motd)
+server-name: ""
 
 # Shown by /discord (optional)
 discord-invite: ""

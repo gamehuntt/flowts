@@ -5,13 +5,19 @@ api-version: '1.21'
 description: Connects your server to Discord with the shared Flowt bot, plus global teams.
 
 commands:
+  connect:
+    description: Connect this server to Discord
+    usage: /<command> [code]
+  account:
+    description: Link your Minecraft account to Discord
+    usage: /<command> connect [code]
   discord:
     description: Discord info and account linking
     aliases: [discordsrv, dsrv]
     usage: /<command> [link [code]]
   flowt:
     description: Flowt admin commands
-    usage: /<command> <setup [code]|status|reload>
+    usage: /<command> <connect [code]|status|reload|disconnect>
   team:
     description: Team commands
     aliases: [t, teams]

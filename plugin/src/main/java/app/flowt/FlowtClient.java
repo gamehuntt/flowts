@@ -69,14 +69,14 @@ final class FlowtClient {
 
     private void connect() {
         if (!running) return;
-        String key = plugin.getConfig().getString("api-key", "").trim();
-        if (key.isEmpty() || key.startsWith("PASTE")) {
-            plugin.getLogger().warning("api-key is not set in plugins/Flowt/config.yml - Discord features stay off until you set it (teams still work).");
+        String key = plugin.apiKey();
+        if (key.isEmpty()) {
+            plugin.getLogger().info("Not connected to Discord yet. Run /connect in Discord (Manage Server permission), then /connect <code> here. Teams work without it.");
             return;
         }
         String host = hostFromKey(key);
         if (host == null) {
-            plugin.getLogger().warning("The api-key in config.yml is not valid (or is an old-format key). Create a new one in Discord with /flowt create.");
+            plugin.getLogger().warning("The saved connection is not valid. Run /flowt disconnect and then /connect again.");
             return;
         }
         String scheme = (host.startsWith("localhost") || host.startsWith("127.0.0.1")) ? "ws" : "wss";
@@ -92,7 +92,10 @@ final class FlowtClient {
                         if (c instanceof WebSocketHandshakeException whe && whe.getResponse() != null) {
                             int code = whe.getResponse().statusCode();
                             if (code == 401) {
-                                plugin.getLogger().warning("Flowt API rejected the api-key (HTTP 401). Check api-key in config.yml.");
+                                // the server was removed on the Flowt side (for example after a data reset): forget the old key
+                                plugin.setApiKey("");
+                                plugin.getLogger().warning("Flowt no longer knows this server (HTTP 401). The old connection was removed - run /connect to connect again.");
+                                return;
                             } else {
                                 plugin.getLogger().warning("Flowt API refused the connection (HTTP " + code + ").");
                             }
@@ -103,7 +106,7 @@ final class FlowtClient {
                         scheduleReconnect();
                     });
         } catch (IllegalArgumentException e) {
-            plugin.getLogger().severe("The api-key contains an invalid server address.");
+            plugin.getLogger().severe("The saved connection contains an invalid server address. Run /flowt disconnect.");
         }
     }
 
@@ -315,7 +318,7 @@ final class FlowtClient {
                 String code = str(o, "code");
                 int mins = o.has("expiresInMinutes") ? o.get("expiresInMinutes").getAsInt() : 10;
                 Msg.ok(p, "Your link code is " + ChatColor.YELLOW + code + ChatColor.GREEN + ".");
-                Msg.info(p, "In Discord run: /link code:" + code + "  (valid for " + mins + " minutes)");
+                Msg.info(p, "In Discord run: /account connect code:" + code + "  (valid for " + mins + " minutes)");
             });
             case "link.error" -> sync(() -> {
                 Player p = playerOf(str(o, "uuid"));
@@ -323,7 +326,7 @@ final class FlowtClient {
                 String e = str(o, "error");
                 if (e.equals("already_linked")) Msg.err(p, "Your account is already linked to Discord.");
                 else if (e.equals("too_fast")) Msg.err(p, "Please wait a few seconds before asking for a new code.");
-                else if (e.equals("invalid_code")) Msg.err(p, "That code is wrong or expired. Run /link in Discord to get a new one.");
+                else if (e.equals("invalid_code")) Msg.err(p, "That code is wrong or expired. Run /account connect in Discord to get a new one.");
                 else if (e.equals("discord_already_linked")) Msg.err(p, "That Discord account is already linked to another Minecraft account.");
                 else if (e.equals("too_many_attempts")) Msg.err(p, "Too many wrong codes. Try again in an hour.");
                 else Msg.err(p, "Could not create a link code. Try again later.");
@@ -339,7 +342,7 @@ final class FlowtClient {
                 int mins = o.has("expiresInMinutes") ? o.get("expiresInMinutes").getAsInt() : 30;
                 Msg.ok(s, "Setup code: " + ChatColor.YELLOW + code + ChatColor.GREEN + "  (valid for " + mins + " minutes)");
                 Msg.info(s, "In your Discord server (you need the Manage Server permission) run:");
-                Msg.plain(s, ChatColor.WHITE + "/flowt setup code:" + code + ChatColor.GRAY + "  [channel: optional]");
+                Msg.plain(s, ChatColor.WHITE + "/connect code:" + code + ChatColor.GRAY + "  [channel: optional]");
             });
             case "setup.done" -> sync(() -> {
                 CommandSender s = confirmRequester != null ? confirmRequester : Bukkit.getConsoleSender();
@@ -350,7 +353,7 @@ final class FlowtClient {
                 CommandSender s = confirmRequester != null ? confirmRequester : Bukkit.getConsoleSender();
                 confirmRequester = null;
                 String e = str(o, "error");
-                if (e.equals("invalid_or_expired_code")) Msg.err(s, "That code is wrong or expired. Run /flowt setup in Discord to get a new one.");
+                if (e.equals("invalid_or_expired_code")) Msg.err(s, "That code is wrong or expired. Run /connect in Discord to get a new one.");
                 else if (e.equals("too_many_attempts")) Msg.err(s, "Too many wrong codes. Try again in an hour.");
                 else Msg.err(s, "Could not connect to Discord. Try again in a few seconds.");
             });

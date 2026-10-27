@@ -13,6 +13,8 @@
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- set with -Dflowt.api.host=... at build time (GitHub secret FLOWT_API_HOST) -->
+    <flowt.api.host></flowt.api.host>
   </properties>
 
   <repositories>
